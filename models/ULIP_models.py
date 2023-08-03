@@ -101,14 +101,21 @@ class ULIP_WITH_IMAGE(nn.Module):
         nn.init.normal_(self.pc_projection, std=512 ** -0.5)
 
     def encode_image(self, image):
+        image = image.float()
         x = self.visual(image)
         x = x @ self.image_projection
 
         return x
 
     def encode_text(self, text):
+        # print(text.shape)
+        # print(f"encoding text. text.shape=={text.shape}")
+        text = text.long()
         x = self.token_embedding(text)  # [batch_size, n_ctx, d_model]
+        # print(f"x.shape after token embedding: {x.shape}")
         x = x + self.positional_embedding
+        # print(f"x.shape after pos embedding: {x.shape}")
+        
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x)
         x = x.permute(1, 0, 2)  # LND -> NLD
@@ -144,22 +151,25 @@ class ULIP_WITH_IMAGE(nn.Module):
         nn.init.normal_(self.text_projection, std=self.transformer.width ** -0.5)
 
     def encode_pc(self, pc):
+        pc = pc.double()
         pc_feat = self.point_encoder(pc)
         pc_embed = pc_feat @ self.pc_projection
         return pc_embed
 
     def forward(self, pc, text, image=None):
+        # print(
+        #     f"forward | pc.shape={pc.shape} | pc.shape={text.shape} | pc.shape={image.shape}")
+        text_embed_all = self.encode_text(text)
+        # text_embed_all = []
+        # for i in range(text.shape[0]):
+        #     text_for_one_sample = text[i]
+        #     text_embed = self.encode_text(text_for_one_sample)
+        #     text_embed = text_embed / text_embed.norm(dim=-1, keepdim=True)
+        #     text_embed = text_embed.mean(dim=0)
+        #     text_embed = text_embed / text_embed.norm(dim=-1, keepdim=True)
+        #     text_embed_all.append(text_embed)
 
-        text_embed_all = []
-        for i in range(text.shape[0]):
-            text_for_one_sample = text[i]
-            text_embed = self.encode_text(text_for_one_sample)
-            text_embed = text_embed / text_embed.norm(dim=-1, keepdim=True)
-            text_embed = text_embed.mean(dim=0)
-            text_embed = text_embed / text_embed.norm(dim=-1, keepdim=True)
-            text_embed_all.append(text_embed)
-
-        text_embed_all = torch.stack(text_embed_all)
+        # text_embed_all = torch.stack(text_embed_all)
         pc_embed = self.encode_pc(pc)
         if image is not None:
             image_embed = self.encode_image(image)
@@ -178,8 +188,8 @@ def get_loss(args):
     return losses.ULIPWithImageLoss()
 
 
-def get_metric_names(model):
-    return ['loss', 'ulip_loss', 'ulip_pc_image_acc', 'ulip_pc_text_acc']
+def get_metric_names(model): # ADDED PC_TEXT_LOSS AND PC_IMG_LOSS
+    return ['loss', 'ulip_loss', 'ulip_pc_image_acc', 'ulip_pc_text_acc', 'pc_text_loss', 'pc_image_loss']
 
 
 def ULIP_PN_SSG(args):
@@ -197,7 +207,8 @@ def ULIP_PN_SSG(args):
 
     if not args.evaluate_3d:
         # load the pretrained model
-        pretrain_slip_model = torch.load('./data/initialize_models/slip_base_100ep.pt', map_location=torch.device('cpu'))
+        pretrain_slip_model = torch.load(
+            'data/initialize_models/initialize_models_slip_base_100ep.pt', map_location=torch.device('cpu'))
         pretrain_slip_model_params = pretrain_slip_model['state_dict']
         pretrain_slip_model_params = {param_name.replace('module.', ''): param for param_name, param in
                                       pretrain_slip_model_params.items()}
@@ -333,8 +344,95 @@ def ULIP_CUSTOMIZED(args):
 
     # =====================================================================
     # This is a sample template to pre-train your customized 3D backbones, please modify this part accordingly!
-    from models.customized_backbone.customized_backbone import CUSTOMIZED_BACKBONE
-    point_encoder = CUSTOMIZED_BACKBONE()
+    # from models.customized_backbone.customized_backbone import CUSTOMIZED_BACKBONE
+    # from models.customized_backbone.customized_backbone import UNETR_encoder
+    
+    from monai.networks.nets import UNETR
+
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Load the checkpoint
+    checkpoint = torch.load('checkpoints/UNETR_model_best_acc.pth')
+    model = UNETR(
+        in_channels=1,
+        out_channels=14,
+        img_size=(96, 96, 96),
+        feature_size=16,
+        hidden_size=768,
+        mlp_dim=3072,
+        num_heads=12,
+        pos_embed="perceptron",
+        norm_name="instance",
+        res_block=True,
+        dropout_rate=0.0,
+    ).to(device)
+    
+    # model = UNETR(
+    #     in_channels=1,
+    #     out_channels=1,
+    #     img_size=(256, 256, 96),
+    #     feature_size=16,
+    #     hidden_size=768,
+    #     mlp_dim=1536,
+    #     num_heads=12,
+    #     pos_embed="perceptron",
+    #     norm_name="instance",
+    #     res_block=True,
+    #     dropout_rate=0.0,
+    # ).to(device)
+    
+    model_dict = model.state_dict()
+    # filter out unnecessary keys
+    state_dict = {k: v for k, v in checkpoint.items() if k in model_dict}
+    # overwrite entries in the existing state dict
+    model_dict.update(state_dict)
+    # load the new state dict
+    model.load_state_dict(model_dict)
+    
+    # Define a new model that only uses the encoder part of UNETR
+    class EncoderModel(nn.Module):
+        def __init__(self, unetr_model, num_heads=12):
+            super(EncoderModel, self).__init__()
+            # Extract the transformer (encoder) part
+            self.vit = unetr_model.vit
+            self.num_heads = num_heads
+
+            # Add a fully connected layer
+            self.fc = nn.Linear(768, 512)
+
+        def forward(self, x):
+            # print(f"Encoder input x.shape: {x.shape} | type={type(x)}")
+            x = x.float()  # convert tensor to float precision
+            # vit outputs a list of length num_heads
+            # Check model parameter dtype
+            # print(next(self.vit.parameters()).dtype)
+            # print(x.dtype)  # Check input dtype
+            _, outputs = self.vit(x)
+
+            # Convert list of tensors to tensor
+            # Shape: (num_heads, batch_size, sequence_len, embed_dim)
+            outputs_tensor = torch.stack(outputs, dim=0)
+
+            # Perform max pooling across all heads and sequence length
+            # Shape: (batch_size, embed_dim)
+            # pooled_output = torch.mean(outputs_tensor, dim=[0, 2])
+            
+            
+            pooled_output, _ = torch.max(outputs_tensor, dim=0)
+            # Shape after first max: (batch_size, sequence_len, embed_dim)
+            pooled_output, _ = torch.max(pooled_output, dim=1)
+            # Shape after second max: (batch_size, embed_dim)
+
+            # Pass the mean-pooled output through the fully connected layer
+            out = self.fc(pooled_output)
+            return out
+    
+    point_encoder = EncoderModel(model).to(device)
+    del model
+    
+    # point_encoder = UNETR_encoder(in_channels=3, out_channels=2,img_size=512)
+    
     # We assume you might have different point cloud output feature dimension,
     # we added a projecting layer to unify the point cloud output dimension before doing the multimodal alignment,
     # please change the output feature dimension here.
@@ -347,7 +445,8 @@ def ULIP_CUSTOMIZED(args):
 
     if not args.evaluate_3d:
         # load the pretrained model
-        pretrain_slip_model = torch.load('./data/initialize_models/slip_base_100ep.pt', map_location=torch.device('cpu'))
+        pretrain_slip_model = torch.load(
+            'data/initialize_models/initialize_models_slip_base_100ep.pt', map_location=torch.device('cpu'))
         pretrain_slip_model_params = pretrain_slip_model['state_dict']
         pretrain_slip_model_params = {param_name.replace('module.', ''): param for param_name, param in
                                       pretrain_slip_model_params.items()}

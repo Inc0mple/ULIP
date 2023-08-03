@@ -7,7 +7,6 @@
  * https://github.com/facebookresearch/SLIP
  * By Le Xue
 '''
-from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
 from skimage.transform import resize
 from nltk.tokenize import word_tokenize
 from torchvision.transforms.functional import pad
@@ -15,7 +14,6 @@ from torch.utils.data import Dataset
 from PIL import Image
 import nibabel as nib
 import numpy as np
-import pandas as pd
 import os
 import argparse
 from collections import OrderedDict
@@ -31,9 +29,6 @@ import torch.utils.data
 import torch.utils.data.distributed
 import torchvision.transforms as transforms
 import collections
-
-import matplotlib.pyplot as plt
-from numpy.random import randint
 
 from data.dataset_3d import *
 
@@ -55,8 +50,7 @@ def get_args_parser():
     parser.add_argument('--use_height', action='store_true', help='whether to use height informatio, by default enabled with PointNeXt.')
     parser.add_argument('--npoints', default=8192, type=int, help='number of points used for pre-train and test.')
     # Model
-    # parser.add_argument('--model', default='ULIP_PN_SSG', type=str)
-    parser.add_argument('--model', default='ULIP_CUSTOMIZED', type=str)
+    parser.add_argument('--model', default='ULIP_PN_SSG', type=str)
     # Training
     parser.add_argument('--epochs', default=250, type=int)
     parser.add_argument('--warmup-epochs', default=1, type=int)
@@ -98,27 +92,14 @@ def get_args_parser():
 
     parser.add_argument('--test_ckpt_addr', default='',
                         help='the ckpt to test 3d zero shot')
-    parser.add_argument('--augment', action='store_true',
-                        help='perform random crop instead of simple resizing')
     return parser
 
 
 best_acc1 = 0
 
-# Computes the start and end indices for slicing a list (or a dimension of an array)
-# in a way that grows outwards from the middle.
-def compute_slice_indices(slice_num, max_idx):
-    mid_idx = max_idx // 2
-    slice_half_length = slice_num // 2
-    start_idx = mid_idx - slice_half_length
-    end_idx = mid_idx + slice_half_length
-    # Ensure indices are within valid range
-    start_idx = max(0, start_idx)
-    end_idx = min(max_idx, end_idx)
-    return start_idx, end_idx
 
-class CustomTrainDataset(Dataset):
-    def __init__(self, nifti_dir, txt_dir, png_dir, tokenizer, augment = False):
+class CustomDataset(Dataset):
+    def __init__(self, nifti_dir, png_dir, txt_dir, tokenizer):
         self.tokenizer = tokenizer
         self.nifti_files = sorted(os.listdir(nifti_dir))
         self.png_files = sorted(os.listdir(png_dir))
@@ -126,58 +107,25 @@ class CustomTrainDataset(Dataset):
         self.nifti_dir = nifti_dir
         self.png_dir = png_dir
         self.txt_dir = txt_dir
-        self.augment = augment
 
         # Compute the min_slice_number across all nifti files
-        # self.min_slice_number = min(
-        #     [nib.load(os.path.join(nifti_dir, f)).shape[2] for f in self.nifti_files])
-        self.min_slice_number = 96
-        
+        self.min_slice_number = min(
+            [nib.load(os.path.join(nifti_dir, f)).shape[2] for f in self.nifti_files])
+
     def __len__(self):
         return len(self.nifti_files)
 
     def __getitem__(self, idx):
         # Load and process the NIfTI file
         nifti_path = os.path.join(self.nifti_dir, self.nifti_files[idx])
-        # print(f"acessing {nifti_path}")
         nifti_img = nib.load(nifti_path).get_fdata()
-        
-        max_idx = nifti_img.shape[2]  # Assuming the slice is along the third dimension
-        
-        
-        if self.augment: # Resize to 256 256 n, then random crop to 96 96 96
-            # First resize to 256, 256, slice_num
-            # nifti_img = resize(nifti_img, (96, 96, max_idx))
-            nifti_img = resize(nifti_img, (96, 96, max_idx))
+        nifti_img = nifti_img[:, :, :self.min_slice_number]
+        nifti_img = resize(nifti_img, (512, 512, self.min_slice_number))
 
-            # Random crop to (96, 96, 96)
-            # start_x = randint(0, nifti_img.shape[0] - 96)
-            # start_y = randint(0, nifti_img.shape[1] - 96)
-            # start_z = randint(0, nifti_img.shape[2] - 96)
-            
-            # start_x = randint(0, nifti_img.shape[0] - 96)
-            # start_y = randint(0, nifti_img.shape[1] - 96)
-            start_z = randint(0, nifti_img.shape[2] - 96)
-            
-            # nifti_img = nifti_img[start_x:start_x+96,
-            #                       start_y:start_y+96, start_z:start_z+96]
-
-            nifti_img = nifti_img[:, :, start_z:start_z+96]
-        else: # simple resizing to 96 96 with the middle 96 slices
-            start_idx, end_idx = compute_slice_indices(
-                self.min_slice_number, max_idx)
-            nifti_img = nifti_img[:, :, start_idx:end_idx]
-            nifti_img = resize(nifti_img, (96, 96, 96))
-        
         # Load and process the PNG file
         png_path = os.path.join(self.png_dir, self.png_files[idx])
         png_img = np.array(Image.open(png_path))
-        # Had to resize from 512 to 224 for the ULIP image model
-        png_img = resize(png_img, (224, 224))
-
-        # We will use the np.newaxis to add a dimension at the beginning
-        # and then use np.repeat to duplicate the image across three channels
-        png_img = np.repeat(png_img[np.newaxis, :, :], 3, axis=0)
+        png_img = resize(png_img, (512, 512))
 
         # Load and process the text file
         txt_path = os.path.join(self.txt_dir, self.txt_files[idx])
@@ -188,42 +136,7 @@ class CustomTrainDataset(Dataset):
         return nifti_img, png_img, tokens
 
 
-class CustomValDataset(Dataset):
-    def __init__(self, nifti_val_dir, labels_csv):
-        self.nifti_files = sorted(os.listdir(nifti_val_dir))
-        self.nifti_val_dir = nifti_val_dir
-        self.labels_df = pd.read_csv(labels_csv)
-        # self.min_slice_number = min([nib.load(os.path.join(nifti_dir, f)).shape[2] for f in self.nifti_files])
-        self.min_slice_number = 96
-
-    def __len__(self):
-        return len(self.nifti_files)
-
-    def __getitem__(self, idx):
-        # Load and process the NIfTI file
-        nifti_path = os.path.join(self.nifti_val_dir, self.nifti_files[idx])
-        # print(f"acessing {nifti_path}")
-        nifti_img = nib.load(nifti_path).get_fdata()
-        
-        # Assuming the slice is along the third dimension
-        max_idx = nifti_img.shape[2]
-        start_idx, end_idx = compute_slice_indices(self.min_slice_number, max_idx)
-        nifti_img = nifti_img[:, :, ]
-
-        nifti_img = nifti_img[:, :, start_idx:end_idx]
-        # nifti_img = resize(nifti_img, (96, 96, 96))
-        nifti_img = resize(nifti_img, (96, 96, 96))
-        
-        filename = self.nifti_files[idx].split(".")[0]
-        
-        # Extract labels and label_name from the DataFrame
-        label = int(self.labels_df.loc[self.labels_df['filename'] == filename, 'labels'].values[0])
-        label_name = self.labels_df.loc[self.labels_df['filename'] == filename, 'label_name'].values[0]
-
-        return nifti_img, label, label_name
-
 def main(args):
-    start_time = time.time()
     utils.init_distributed_mode(args)
 
     global best_acc1
@@ -313,17 +226,8 @@ def main(args):
             normalize
         ])
 
-    # train_dataset = get_dataset(train_transform, tokenizer, args, 'train')
-    # val_dataset = get_dataset(None, tokenizer, args, 'val')
-    nifti_path = "NNI_Data/3D_stack_nii"
-    png_path = "NNI_Data/2D_projection_AP_png"
-    text_path = "NNI_Data/Report_txt"
-    
-    nifti_path_valid = "NNI_Data_valid/3D_stack_nii"
-    labels_path_valid = "NNI_Data_valid/labels.csv"
-    
-    train_dataset = CustomTrainDataset(nifti_path, text_path, png_path, SimpleTokenizer(), augment=args.augment)
-    val_dataset = CustomValDataset(nifti_path_valid, labels_path_valid)
+    train_dataset = get_dataset(train_transform, tokenizer, args, 'train')
+    val_dataset = get_dataset(None, tokenizer, args, 'val')
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
@@ -331,7 +235,7 @@ def main(args):
     else:
         train_sampler = None
         val_sampler = None
-    print("1")
+
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True,
@@ -340,13 +244,6 @@ def main(args):
     val_loader = torch.utils.data.DataLoader(
         val_dataset, batch_size=args.batch_size, shuffle=(val_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=val_sampler, drop_last=False)
-    
-    # train_loader = torch.utils.data.DataLoader(
-    #     train_dataset, batch_size=args.batch_size, shuffle=(
-    #         train_sampler is None), drop_last=False)
-
-    # val_loader = torch.utils.data.DataLoader(
-    #     val_dataset, batch_size=args.batch_size, shuffle=(val_sampler is None), drop_last=False)
 
     lr_schedule = utils.cosine_scheduler(args.lr, args.lr_end, args.epochs,
         len(train_loader) // args.update_freq, warmup_epochs=args.warmup_epochs, start_warmup_value=args.lr_start)
@@ -354,11 +251,8 @@ def main(args):
     print(args)
 
     print("=> beginning training")
-    print(f"Batch_size: {args.batch_size}")
 
     best_epoch = -1
-    
-    logs_list = []
 
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
@@ -406,48 +300,13 @@ def main(args):
                      'epoch': epoch,
                      'best_acc1': best_acc1,
                      'best_epoch': best_epoch}
-        
-        logs_list.append(log_stats)
-        
+
         if utils.is_main_process():
             if args.wandb:
                 wandb.log(log_stats)
                 # wandb.watch(model)
             with open(os.path.join(args.output_dir, 'log.txt'), 'a') as f:
                 f.write(json.dumps(log_stats) + '\n')
-                
-    
-
-    print("Saving graphs...")
-    graphs_folder = os.path.join(args.output_dir, "graphs")
-    os.makedirs(graphs_folder, exist_ok=True)
-    keys = set().union(*logs_list)
-    keys.remove('epoch')
-
-    # For each key, create a plot
-    for key in keys:
-        epochs = [d['epoch'] for d in logs_list]
-        values = [d[key] for d in logs_list]
-
-        plt.figure(figsize=(10, 5))
-        plt.plot(epochs, values, marker='o')
-        plt.title(f'{key} across epochs')
-        plt.xlabel('Epoch')
-        plt.ylabel(key)
-        plt.grid(True)
-
-        # Save the figure in the output folder
-        plt.savefig(os.path.join(graphs_folder, f'{key}.png'))
-        plt.close()
-    end_time = time.time()
-    
-    # Calculate the total execution time
-    total_time = end_time - start_time
-
-    # Open the text file in write mode
-    with open(os.path.join(args.output_dir, "execution_time.txt"), "w") as file:
-        # Write the execution time to the file
-        file.write(f"The script executed in {total_time} seconds.")
 
 
 def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule, args):
@@ -477,30 +336,14 @@ def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule,
         for k, param_group in enumerate(optimizer.param_groups):
             param_group['lr'] = lr_schedule[it]
 
-        # pc = inputs[3]
-        # texts = inputs[2]
-        # image = inputs[4]
-        
-        # Changed
-        pc = inputs[0]
-        # Needed to prevent einops.EinopsError: Expected 5 dimensions, got 4
-        pc = torch.unsqueeze(pc, 1)
-        image = inputs[1]
-        # spoof channel data
-        # print(f"image.shape: {image.shape}")
-        # image = torch.unsqueeze(image, 1)
+        pc = inputs[3]
         texts = inputs[2]
-        inputs = [[inputs]]
-        
-        # print(
-        #     f"inputs length: {len(inputs)} | pc.shape: {pc.shape} | image.shape: {image.shape} | texts.shape: {texts.shape}")
-        
+
+        image = inputs[4]
         inputs = [pc, texts, image]
 
         inputs = [tensor.cuda(args.gpu, non_blocking=True) for tensor in inputs]
-        # print(
-        #     f"inputs length after line 398: {len(inputs)} | pc.shape: {pc.shape} | image.shape: {image.shape} | texts.shape: {texts.shape}")
-        
+
         # compute output
         with amp.autocast(enabled=not args.disable_amp):
             outputs = model(*inputs)
@@ -552,26 +395,21 @@ def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule,
 def test_zeroshot_3d_core(test_loader, model, tokenizer, args=None):
     batch_time = AverageMeter('Time', ':6.3f')
     top1 = AverageMeter('Acc@1', ':6.2f')
-    # top2 = AverageMeter('Acc@2', ':6.2f')
-    f1_meter = AverageMeter('F1_Macro@1', ':6.2f')
-    precision_meter = AverageMeter('Precision@1', ':6.2f')
-    recall_meter = AverageMeter('Recall@1', ':6.2f')
+    top5 = AverageMeter('Acc@5', ':6.2f')
     progress = ProgressMeter(
         len(test_loader),
-        [batch_time, top1, f1_meter, precision_meter, recall_meter],
+        [batch_time, top1, top5],
         prefix='Test: ')
 
     # switch to evaluate mode
     model.eval()
 
     print('=> encoding captions')
-    with open(os.path.join("./NNI_Data_valid", 'templates_v2.json')) as f:
-        # templates = json.load(f)[args.validate_dataset_prompt]
-        templates = json.load(f)["MRA"]
+    with open(os.path.join("./data", 'templates.json')) as f:
+        templates = json.load(f)[args.validate_dataset_prompt]
 
-    with open(os.path.join("./NNI_Data_valid", 'labels.json')) as f:
-        # labels = json.load(f)[args.validate_dataset_name]
-        labels = json.load(f)["MRA"]
+    with open(os.path.join("./data", 'labels.json')) as f:
+        labels = json.load(f)[args.validate_dataset_name]
 
 
     with torch.no_grad():
@@ -591,7 +429,7 @@ def test_zeroshot_3d_core(test_loader, model, tokenizer, args=None):
         end = time.time()
         per_class_stats = collections.defaultdict(int)
         per_class_correct_top1 = collections.defaultdict(int)
-        # per_class_correct_top2 = collections.defaultdict(int)
+        per_class_correct_top5 = collections.defaultdict(int)
 
         for i, (pc, target, target_name) in enumerate(test_loader):
             for name in target_name:
@@ -599,9 +437,6 @@ def test_zeroshot_3d_core(test_loader, model, tokenizer, args=None):
 
             pc = pc.cuda(args.gpu, non_blocking=True)
             target = target.cuda(args.gpu, non_blocking=True)
-            
-            # Needed to prevent einops.EinopsError: Expected 5 dimensions, got 4
-            pc = torch.unsqueeze(pc, 1)
 
             # encode pc
             pc_features = utils.get_model(model).encode_pc(pc)
@@ -611,65 +446,42 @@ def test_zeroshot_3d_core(test_loader, model, tokenizer, args=None):
             logits_per_pc = pc_features @ text_features.t()
 
             # measure accuracy and record loss
-            (acc1), (f1), (precision), (recall), correct = accuracy(logits_per_pc, target, topk=(1,))
+            (acc1, acc5), correct = accuracy(logits_per_pc, target, topk=(1, 5))
             # TODO: fix the all reduce for the correct variable, assuming only one process for evaluation!
-            acc1, f1, precision, recall = utils.scaled_all_reduce([acc1, f1, precision, recall])
-            print(acc1, f1, precision, recall)
-            top1.update(acc1[0].item(), pc.size(0))
-            # top2.update(acc2[0].item(), pc.size(0))
-            
-            # Our own metrics for imbalanced classes
-            f1_meter.update(f1[0].item(), pc.size(0))
-            precision_meter.update(precision[0].item(), pc.size(0))
-            recall_meter.update(recall[0].item(), pc.size(0))
-
+            acc1, acc5 = utils.scaled_all_reduce([acc1, acc5])
+            top1.update(acc1.item(), pc.size(0))
+            top5.update(acc5.item(), pc.size(0))
 
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
 
-
             top1_accurate = correct[:1].squeeze()
-            # top2_accurate = correct[:5].float().sum(0, keepdim=True).squeeze()
-            # print(f"top1_accurate: {top1_accurate}")
+            top5_accurate = correct[:5].float().sum(0, keepdim=True).squeeze()
             for idx, name in enumerate(target_name):
-                
-                if len(top1_accurate.shape) > 0:  # Check if tensor is not 0-dimensional
-                    if top1_accurate[idx].item():
-                        per_class_correct_top1[name] += 1
-                else:
-                    if top1_accurate.item():
-                        per_class_correct_top1[name] += 1
-                # if top1_accurate[idx].item():
-                #     per_class_correct_top1[name] += 1
-                # if len(top2_accurate.shape) > 0:  # Check if tensor is not 0-dimensional
-                #     if top2_accurate[idx].item():
-                #         per_class_correct_top2[name] += 1
-                # else:
-                #     if top2_accurate.item():
-                #         per_class_correct_top2[name] += 1
-                # if top2_accurate[idx].item():
-                #     per_class_correct_top2[name] += 1
+                if top1_accurate[idx].item():
+                    per_class_correct_top1[name] += 1
+                if top5_accurate[idx].item():
+                    per_class_correct_top5[name] += 1
 
             if i % args.print_freq == 0:
                 progress.display(i)
 
         top1_accuracy_per_class = {}
-        # top2_accuracy_per_class = {}
+        top5_accuracy_per_class = {}
         for name in per_class_stats.keys():
             top1_accuracy_per_class[name] = per_class_correct_top1[name] / per_class_stats[name]
-            # top2_accuracy_per_class[name] = per_class_correct_top2[name] / per_class_stats[name]
+            top5_accuracy_per_class[name] = per_class_correct_top5[name] / per_class_stats[name]
 
         top1_accuracy_per_class = collections.OrderedDict(top1_accuracy_per_class)
-        # top2_accuracy_per_class = collections.OrderedDict(top2_accuracy_per_class)
+        top5_accuracy_per_class = collections.OrderedDict(top5_accuracy_per_class)
         print(','.join(top1_accuracy_per_class.keys()))
         print(','.join([str(value) for value in top1_accuracy_per_class.values()]))
-        # print(','.join([str(value) for value in top2_accuracy_per_class.values()]))
+        print(','.join([str(value) for value in top5_accuracy_per_class.values()]))
 
     progress.synchronize()
-    print(
-        '0-shot * Acc@1 {top1.avg:.3f} f1 {f1_meter.avg:.3f} precision {precision_meter.avg:.3f} recall {recall_meter.avg:.3f}')
-    return {'acc1': top1.avg, 'f1': f1_meter.avg, 'precision': precision_meter.avg, 'recall': recall_meter.avg}
+    print('0-shot * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}')
+    return {'acc1': top1.avg, 'acc5': top5.avg}
 
 def test_zeroshot_3d(args):
     ckpt = torch.load(args.test_ckpt_addr, map_location='cpu')
@@ -767,30 +579,13 @@ def accuracy(output, target, topk=(1,)):
 
         _, pred = output.topk(maxk, 1, True, True)
         pred = pred.t()
-        # print("output: ", output)
-        # print("target: ", target)
-        # print("pred: ", pred)
         correct = pred.eq(target.reshape(1, -1).expand_as(pred))
 
-        res_acc = []
-        res_f1 = []
-        res_precision = []
-        res_recall = []
+        res = []
         for k in topk:
             correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
-            res_acc.append(correct_k.mul_(100.0 / batch_size))
-            
-            pred_k = pred[:k].reshape(-1)
-            f1_k = f1_score(target.cpu().numpy(),
-                            pred_k.cpu().numpy(), average='macro', zero_division=0)
-            precision_k = precision_score(
-                target.cpu().numpy(), pred_k.cpu().numpy(), zero_division=0)
-            recall_k = recall_score(
-                target.cpu().numpy(), pred_k.cpu().numpy(), zero_division=0)
-            res_f1.append(torch.tensor(f1_k).to(target.device))
-            res_precision.append(torch.tensor(precision_k).to(target.device))
-            res_recall.append(torch.tensor(recall_k).to(target.device))
-        return res_acc, res_f1, res_precision, res_recall, correct
+            res.append(correct_k.mul_(100.0 / batch_size))
+        return res, correct
 
 
 if __name__ == '__main__':

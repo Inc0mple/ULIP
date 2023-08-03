@@ -445,13 +445,22 @@ np_str_obj_array_pattern = re.compile(r'[SaUO]')
 
 def customized_collate_fn(batch):
     r"""Puts each data field into a tensor with outer dimension batch size"""
-
+   
     elem = batch[0]
     elem_type = type(elem)
-
+    # print(f"customized_collate_fn elem type: {elem_type}")
+    # print("elem_type", elem_type)
+    # print("type(batch)", type(batch))
     if isinstance(batch, list):
-        batch = [example for example in batch if example[4] is not None]
-
+        # print(batch[0])
+        # print(len(batch))
+        # print(type(batch))
+        # print(len(batch[0]))
+        # print(type(batch[0]))
+        # print(len(batch[0][0]), len(batch[0][1]), len(batch[0][2]))
+        
+        # batch = [example for example in batch if example[4] is not None]
+        batch = [example for example in batch]
     if isinstance(elem, torch.Tensor):
         out = None
         if torch.utils.data.get_worker_info() is not None:

@@ -1,0 +1,5 @@
+*.pt
+NNI_Data
+NNI_Data_valid
+modelnet40_hdf5_2048
+*.pth
