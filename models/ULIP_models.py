@@ -17,6 +17,7 @@ from data.dataset_3d import  *
 from models import losses
 from torch.nn.parameter import Parameter
 from easydict import EasyDict
+from monai.networks.nets.vit import ViT
 
 
 class LayerNorm(nn.LayerNorm):
@@ -348,24 +349,35 @@ def ULIP_CUSTOMIZED(args):
     # from models.customized_backbone.customized_backbone import UNETR_encoder
     
     from monai.networks.nets import UNETR
+    IN_CHANNELS = 1
+    OUT_CHANNELS = 14
+    IMG_SIZE = (96, 96, 96)
+    FEATURE_SIZE = 16
+    HIDDEN_SIZE = 768
+    MLP_DIM = 3072
+    NUM_HEADS = 12
+    POS_EMBED = "perceptron"
+    NORM_NAME = "instance"
+    RES_BLOCK = True
+    DROPOUT_RATE = 0.0
 
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+    print("UNTRAINED 3D ENCODER")
     # Load the checkpoint
-    checkpoint = torch.load('checkpoints/UNETR_model_best_acc.pth')
+    # checkpoint = torch.load('checkpoints/UNETR_model_best_acc.pth')
     model = UNETR(
-        in_channels=1,
-        out_channels=14,
-        img_size=(96, 96, 96),
-        feature_size=16,
-        hidden_size=768,
-        mlp_dim=3072,
-        num_heads=12,
-        pos_embed="perceptron",
-        norm_name="instance",
-        res_block=True,
-        dropout_rate=0.0,
+        in_channels=IN_CHANNELS,
+        out_channels=OUT_CHANNELS,
+        img_size=IMG_SIZE,
+        feature_size=FEATURE_SIZE,
+        hidden_size=HIDDEN_SIZE,
+        mlp_dim=MLP_DIM,
+        num_heads=NUM_HEADS,
+        pos_embed=POS_EMBED,
+        norm_name=NORM_NAME,
+        res_block=RES_BLOCK,
+        dropout_rate=DROPOUT_RATE,
     ).to(device)
     
     # model = UNETR(
@@ -382,20 +394,35 @@ def ULIP_CUSTOMIZED(args):
     #     dropout_rate=0.0,
     # ).to(device)
     
-    model_dict = model.state_dict()
-    # filter out unnecessary keys
-    state_dict = {k: v for k, v in checkpoint.items() if k in model_dict}
-    # overwrite entries in the existing state dict
-    model_dict.update(state_dict)
-    # load the new state dict
-    model.load_state_dict(model_dict)
+    # model_dict = model.state_dict()
+    # # filter out unnecessary keys
+    # state_dict = {k: v for k, v in checkpoint.items() if k in model_dict}
+    # # overwrite entries in the existing state dict
+    # model_dict.update(state_dict)
+    # # load the new state dict
+    # model.load_state_dict(model_dict)
     
     # Define a new model that only uses the encoder part of UNETR
     class EncoderModel(nn.Module):
         def __init__(self, unetr_model, num_heads=12):
             super(EncoderModel, self).__init__()
             # Extract the transformer (encoder) part
+            
             self.vit = unetr_model.vit
+            # self.vit = ViT(
+            #     in_channels=IN_CHANNELS,
+            #     img_size=IMG_SIZE,
+            #     patch_size=unetr_model.patch_size,
+            #     hidden_size=HIDDEN_SIZE,
+            #     mlp_dim=MLP_DIM,
+            #     num_layers=unetr_model.num_layers,
+            #     num_heads=NUM_HEADS,
+            #     pos_embed=POS_EMBED,
+            #     classification=False,
+            #     dropout_rate=DROPOUT_RATE,
+            #     spatial_dims=3,
+            #     qkv_bias=False,
+            # )
             self.num_heads = num_heads
 
             # Add a fully connected layer
@@ -408,24 +435,33 @@ def ULIP_CUSTOMIZED(args):
             # Check model parameter dtype
             # print(next(self.vit.parameters()).dtype)
             # print(x.dtype)  # Check input dtype
-            _, outputs = self.vit(x)
+            x, outputs = self.vit(x)
+            # print(_.shape)
+            
 
             # Convert list of tensors to tensor
             # Shape: (num_heads, batch_size, sequence_len, embed_dim)
-            outputs_tensor = torch.stack(outputs, dim=0)
+            # outputs_tensor = torch.stack(outputs, dim=0)
+            # print(outputs_tensor.shape)
+            cls_token = x[:, 0]
+            # print(cls_token.shape)
+            # assert(True == False)
+            
 
             # Perform max pooling across all heads and sequence length
             # Shape: (batch_size, embed_dim)
             # pooled_output = torch.mean(outputs_tensor, dim=[0, 2])
             
             
-            pooled_output, _ = torch.max(outputs_tensor, dim=0)
-            # Shape after first max: (batch_size, sequence_len, embed_dim)
-            pooled_output, _ = torch.max(pooled_output, dim=1)
+            # pooled_output, _ = torch.max(outputs_tensor, dim=0)
+            # # Shape after first max: (batch_size, sequence_len, embed_dim)
+            # pooled_output, _ = torch.max(pooled_output, dim=1)
             # Shape after second max: (batch_size, embed_dim)
 
             # Pass the mean-pooled output through the fully connected layer
-            out = self.fc(pooled_output)
+            out = self.fc(cls_token)
+            
+            # out = cls_token
             return out
     
     point_encoder = EncoderModel(model).to(device)
