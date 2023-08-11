@@ -1,7 +1,11 @@
 *.pt
+*.ckpt
 NNI_Data
 NNI_Data_valid
 modelnet40_hdf5_2048
 *.pth
 __pycache__/
 ADAM_release_subjs
+ADAM_features
+ADAM_labels
+ADAM_labels_fixed

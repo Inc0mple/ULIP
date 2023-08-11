@@ -60,3 +60,77 @@ class ULIPWithImageLoss(nn.Module):
             pc_image_acc = 100 * correct / local_batch_size
 
         return {'loss': loss, 'ulip_loss': loss, "pc_text_loss": pc_text_loss, "pc_image_loss": pc_image_loss, 'ulip_pc_image_acc': pc_image_acc, 'ulip_pc_text_acc': pc_text_acc}
+
+
+class ULIPWithImageLoss_3Views(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.labels = None
+        self.last_local_batch_size = None
+
+    def forward(self, outputs):
+        pc_embed = outputs['pc_embed']
+        text_embed = outputs['text_embed']
+        image_embed_1 = outputs['image_embed_1']
+        image_embed_2 = outputs['image_embed_2']
+        image_embed_3 = outputs['image_embed_3']
+        logit_scale = outputs['logit_scale']
+        local_batch_size = pc_embed.size(0)
+
+        if local_batch_size != self.last_local_batch_size:
+            self.labels = local_batch_size * utils.get_rank() + torch.arange(
+                local_batch_size, device=pc_embed.device
+            )
+            self.last_local_batch_size = local_batch_size
+
+        # normalized features
+        pc_embed = F.normalize(pc_embed, dim=-1, p=2)
+        text_embed = F.normalize(text_embed, dim=-1, p=2)
+        image_embed_1 = F.normalize(image_embed_1, dim=-1, p=2)
+        image_embed_2 = F.normalize(image_embed_2, dim=-1, p=2)
+        image_embed_3 = F.normalize(image_embed_3, dim=-1, p=2)
+
+        # gather features from all GPUs
+        pc_embed_all, text_embed_all, image_embed_all_1, image_embed_all_2, image_embed_all_3 = \
+            utils.all_gather_batch(
+                [pc_embed, text_embed, image_embed_1, image_embed_2, image_embed_3])
+
+        # cosine similarity as logits
+        logits_per_pc_text = logit_scale * pc_embed @ text_embed_all.t()
+        logits_per_text_pc = logit_scale * text_embed @ pc_embed_all.t()
+        logits_per_pc_image_1 = logit_scale * pc_embed @ image_embed_all_1.t()
+        logits_per_pc_image_2 = logit_scale * pc_embed @ image_embed_all_2.t()
+        logits_per_pc_image_3 = logit_scale * pc_embed @ image_embed_all_3.t()
+        logits_per_image_pc_1 = logit_scale * image_embed_1 @ pc_embed_all.t()
+        logits_per_image_pc_2 = logit_scale * image_embed_2 @ pc_embed_all.t()
+        logits_per_image_pc_3 = logit_scale * image_embed_3 @ pc_embed_all.t()
+        # print(f"self labels: {self.labels}")
+        pc_text_loss = (F.cross_entropy(logits_per_pc_text, self.labels) +
+                        F.cross_entropy(logits_per_text_pc, self.labels)) / 2
+        pc_image_loss = (F.cross_entropy(logits_per_pc_image_1, self.labels) +
+                         F.cross_entropy(logits_per_pc_image_2, self.labels) +
+                         F.cross_entropy(logits_per_pc_image_3, self.labels) +
+                         F.cross_entropy(logits_per_image_pc_1, self.labels) +
+                         F.cross_entropy(logits_per_image_pc_2, self.labels) +
+                         F.cross_entropy(logits_per_image_pc_3, self.labels)) / 6
+        loss = pc_text_loss + pc_image_loss
+
+        # compute accuracy
+        with torch.no_grad():
+            pred = torch.argmax(logits_per_pc_text, dim=-1)
+            correct = pred.eq(self.labels).sum()
+            pc_text_acc = 100 * correct / local_batch_size
+
+            pred = torch.argmax(logits_per_pc_image_1, dim=-1)
+            correct = pred.eq(self.labels).sum()
+            pc_image_1_acc = 100 * correct / local_batch_size
+            
+            pred = torch.argmax(logits_per_pc_image_2, dim=-1)
+            correct = pred.eq(self.labels).sum()
+            pc_image_2_acc = 100 * correct / local_batch_size
+            
+            pred = torch.argmax(logits_per_pc_image_3, dim=-1)
+            correct = pred.eq(self.labels).sum()
+            pc_image_3_acc = 100 * correct / local_batch_size
+
+        return {'loss': loss, 'ulip_loss': loss, "pc_text_loss": pc_text_loss, "pc_image_loss": pc_image_loss, 'ulip_pc_image_1_acc': pc_image_1_acc, 'ulip_pc_image_2_acc': pc_image_2_acc, 'ulip_pc_image_3_acc': pc_image_3_acc, 'ulip_pc_text_acc': pc_text_acc}

@@ -136,7 +136,7 @@ class CustomTrainDataset_3Views(Dataset):
         # Compute the min_slice_number across all nifti files
         # self.min_slice_number = min(
         #     [nib.load(os.path.join(nifti_dir, f)).shape[2] for f in self.nifti_files])
-        self.min_slice_number = 64
+        self.min_slice_number = 96
         
     def __len__(self):
         return len(self.nifti_files)
@@ -153,7 +153,7 @@ class CustomTrainDataset_3Views(Dataset):
         if self.augment: # Resize to 256 256 n, then random crop to 96 96 96
             # First resize to 256, 256, slice_num
             # nifti_img = resize(nifti_img, (96, 96, max_idx))
-            nifti_img = resize(nifti_img, (128, 128, max_idx))
+            nifti_img = resize(nifti_img, (96, 96, max_idx))
 
             # Random crop to (96, 96, 96)
             # start_x = randint(0, nifti_img.shape[0] - 96)
@@ -162,12 +162,12 @@ class CustomTrainDataset_3Views(Dataset):
             
             # start_x = randint(0, nifti_img.shape[0] - 96)
             # start_y = randint(0, nifti_img.shape[1] - 96)
-            start_z = randint(0, nifti_img.shape[2] - self.min_slice_number)
+            start_z = randint(0, nifti_img.shape[2] - 96)
             
             # nifti_img = nifti_img[start_x:start_x+96,
             #                       start_y:start_y+96, start_z:start_z+96]
 
-            nifti_img = nifti_img[:, :, start_z:start_z+self.min_slice_number]
+            nifti_img = nifti_img[:, :, start_z:start_z+96]
         else: # simple resizing to 96 96 with the middle 96 slices
             start_idx, end_idx = compute_slice_indices(
                 self.min_slice_number, max_idx)
@@ -280,7 +280,7 @@ class CustomValDataset(Dataset):
         self.nifti_val_dir = nifti_val_dir
         self.labels_df = pd.read_csv(labels_csv)
         # self.min_slice_number = min([nib.load(os.path.join(nifti_dir, f)).shape[2] for f in self.nifti_files])
-        self.min_slice_number = 64
+        self.min_slice_number = 96
 
     def __len__(self):
         return len(self.nifti_files)
@@ -298,7 +298,7 @@ class CustomValDataset(Dataset):
 
         nifti_img = nifti_img[:, :, start_idx:end_idx]
         # nifti_img = resize(nifti_img, (96, 96, 96))
-        nifti_img = resize(nifti_img, (128, 128, 64))
+        nifti_img = resize(nifti_img, (96, 96, 96))
         
         filename = self.nifti_files[idx].split(".")[0]
         

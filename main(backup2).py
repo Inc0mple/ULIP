@@ -117,26 +117,21 @@ def compute_slice_indices(slice_num, max_idx):
     end_idx = min(max_idx, end_idx)
     return start_idx, end_idx
 
-
-class CustomTrainDataset_3Views(Dataset):
-    def __init__(self, nifti_dir, txt_dir, png_dir_1, png_dir_2, png_dir_3, tokenizer, augment=False):
+class CustomTrainDataset(Dataset):
+    def __init__(self, nifti_dir, txt_dir, png_dir, tokenizer, augment = False):
         self.tokenizer = tokenizer
         self.nifti_files = sorted(os.listdir(nifti_dir))
-        self.png_files_1 = sorted(os.listdir(png_dir_1))
-        self.png_files_2 = sorted(os.listdir(png_dir_2))
-        self.png_files_3 = sorted(os.listdir(png_dir_3))
+        self.png_files = sorted(os.listdir(png_dir))
         self.txt_files = sorted(os.listdir(txt_dir))
         self.nifti_dir = nifti_dir
-        self.png_dir_1 = png_dir_1
-        self.png_dir_2 = png_dir_2
-        self.png_dir_3 = png_dir_3
+        self.png_dir = png_dir
         self.txt_dir = txt_dir
         self.augment = augment
 
         # Compute the min_slice_number across all nifti files
         # self.min_slice_number = min(
         #     [nib.load(os.path.join(nifti_dir, f)).shape[2] for f in self.nifti_files])
-        self.min_slice_number = 64
+        self.min_slice_number = 96
         
     def __len__(self):
         return len(self.nifti_files)
@@ -153,108 +148,27 @@ class CustomTrainDataset_3Views(Dataset):
         if self.augment: # Resize to 256 256 n, then random crop to 96 96 96
             # First resize to 256, 256, slice_num
             # nifti_img = resize(nifti_img, (96, 96, max_idx))
-            nifti_img = resize(nifti_img, (128, 128, max_idx))
-
-            # Random crop to (96, 96, 96)
-            # start_x = randint(0, nifti_img.shape[0] - 96)
-            # start_y = randint(0, nifti_img.shape[1] - 96)
-            # start_z = randint(0, nifti_img.shape[2] - 96)
-            
-            # start_x = randint(0, nifti_img.shape[0] - 96)
-            # start_y = randint(0, nifti_img.shape[1] - 96)
-            start_z = randint(0, nifti_img.shape[2] - self.min_slice_number)
-            
-            # nifti_img = nifti_img[start_x:start_x+96,
-            #                       start_y:start_y+96, start_z:start_z+96]
-
-            nifti_img = nifti_img[:, :, start_z:start_z+self.min_slice_number]
-        else: # simple resizing to 96 96 with the middle 96 slices
-            start_idx, end_idx = compute_slice_indices(
-                self.min_slice_number, max_idx)
-            nifti_img = nifti_img[:, :, start_idx:end_idx]
-            nifti_img = resize(nifti_img, (96, 96, 96))
-        
-        # Load and process the PNG file
-        png_path_1 = os.path.join(self.png_dir_1, self.png_files_1[idx])
-        png_path_2 = os.path.join(self.png_dir_2, self.png_files_2[idx])
-        png_path_3 = os.path.join(self.png_dir_3, self.png_files_3[idx])
-        
-        png_img_1 = np.array(Image.open(png_path_1))
-        # Had to resize from 512 to 224 for the ULIP image model
-        png_img_1 = resize(png_img_1, (224, 224))
-        # We will use the np.newaxis to add a dimension at the beginning
-        # and then use np.repeat to duplicate the image across three channels
-        png_img_1 = np.repeat(png_img_1[np.newaxis, :, :], 3, axis=0)
-        
-        png_img_2 = np.array(Image.open(png_path_2))
-        png_img_2 = resize(png_img_2, (224, 224))
-        png_img_2 = np.repeat(png_img_2[np.newaxis, :, :], 3, axis=0)
-        
-        png_img_3 = np.array(Image.open(png_path_3))
-        png_img_3 = resize(png_img_3, (224, 224))
-        png_img_3 = np.repeat(png_img_3[np.newaxis, :, :], 3, axis=0)
-
-        # Load and process the text file
-        txt_path = os.path.join(self.txt_dir, self.txt_files[idx])
-        with open(txt_path, 'r') as file:
-            txt = file.read()
-        tokens = self.tokenizer(txt)
-
-        return nifti_img, tokens, png_img_1, png_img_2, png_img_3
-    
-    
-class CustomTrainDataset(Dataset):
-    def __init__(self, nifti_dir, txt_dir, png_dir, tokenizer, augment=False):
-        self.tokenizer = tokenizer
-        self.nifti_files = sorted(os.listdir(nifti_dir))
-        self.png_files = sorted(os.listdir(png_dir))
-        self.txt_files = sorted(os.listdir(txt_dir))
-        self.nifti_dir = nifti_dir
-        self.png_dir = png_dir
-        self.txt_dir = txt_dir
-        self.augment = augment
-
-        # Compute the min_slice_number across all nifti files
-        # self.min_slice_number = min(
-        #     [nib.load(os.path.join(nifti_dir, f)).shape[2] for f in self.nifti_files])
-        self.min_slice_number = 96
-
-    def __len__(self):
-        return len(self.nifti_files)
-
-    def __getitem__(self, idx):
-        # Load and process the NIfTI file
-        nifti_path = os.path.join(self.nifti_dir, self.nifti_files[idx])
-        # print(f"acessing {nifti_path}")
-        nifti_img = nib.load(nifti_path).get_fdata()
-
-        # Assuming the slice is along the third dimension
-        max_idx = nifti_img.shape[2]
-
-        if self.augment:  # Resize to 256 256 n, then random crop to 96 96 96
-            # First resize to 256, 256, slice_num
-            # nifti_img = resize(nifti_img, (96, 96, max_idx))
             nifti_img = resize(nifti_img, (96, 96, max_idx))
 
             # Random crop to (96, 96, 96)
             # start_x = randint(0, nifti_img.shape[0] - 96)
             # start_y = randint(0, nifti_img.shape[1] - 96)
             # start_z = randint(0, nifti_img.shape[2] - 96)
-
+            
             # start_x = randint(0, nifti_img.shape[0] - 96)
             # start_y = randint(0, nifti_img.shape[1] - 96)
             start_z = randint(0, nifti_img.shape[2] - 96)
-
+            
             # nifti_img = nifti_img[start_x:start_x+96,
             #                       start_y:start_y+96, start_z:start_z+96]
 
             nifti_img = nifti_img[:, :, start_z:start_z+96]
-        else:  # simple resizing to 96 96 with the middle 96 slices
+        else: # simple resizing to 96 96 with the middle 96 slices
             start_idx, end_idx = compute_slice_indices(
                 self.min_slice_number, max_idx)
             nifti_img = nifti_img[:, :, start_idx:end_idx]
             nifti_img = resize(nifti_img, (96, 96, 96))
-
+        
         # Load and process the PNG file
         png_path = os.path.join(self.png_dir, self.png_files[idx])
         png_img = np.array(Image.open(png_path))
@@ -280,7 +194,7 @@ class CustomValDataset(Dataset):
         self.nifti_val_dir = nifti_val_dir
         self.labels_df = pd.read_csv(labels_csv)
         # self.min_slice_number = min([nib.load(os.path.join(nifti_dir, f)).shape[2] for f in self.nifti_files])
-        self.min_slice_number = 64
+        self.min_slice_number = 96
 
     def __len__(self):
         return len(self.nifti_files)
@@ -298,7 +212,7 @@ class CustomValDataset(Dataset):
 
         nifti_img = nifti_img[:, :, start_idx:end_idx]
         # nifti_img = resize(nifti_img, (96, 96, 96))
-        nifti_img = resize(nifti_img, (128, 128, 64))
+        nifti_img = resize(nifti_img, (96, 96, 96))
         
         filename = self.nifti_files[idx].split(".")[0]
         
@@ -337,8 +251,7 @@ def main(args):
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], bucket_cap_mb=200, find_unused_parameters=False)
 
     # define loss function (criterion) and optimizer
-    # criterion = models.get_loss(args).cuda(args.gpu)
-    criterion = models.get_loss_3_views(args).cuda(args.gpu)
+    criterion = models.get_loss(args).cuda(args.gpu)
 
     p_wd, p_non_wd = [], []
     for n, p in model.named_parameters():
@@ -406,16 +319,10 @@ def main(args):
     png_path = "NNI_Data/2D_projection_AP_png"
     text_path = "NNI_Data/Report_txt"
     
-    png_path_AP = "NNI_Data/2D_projection_AP_png"
-    png_path_LR = "NNI_Data/2D_projection_LR_png"
-    png_path_SI = "NNI_Data/2D_projection_SI_png"
-    
     nifti_path_valid = "NNI_Data_valid/3D_stack_nii"
     labels_path_valid = "NNI_Data_valid/labels.csv"
     
-    # train_dataset = CustomTrainDataset(nifti_path, text_path, png_path, SimpleTokenizer(), augment=args.augment)
-    train_dataset = CustomTrainDataset_3Views(
-        nifti_path, text_path, png_path_AP, png_path_LR, png_path_SI, SimpleTokenizer(), augment=args.augment)
+    train_dataset = CustomTrainDataset(nifti_path, text_path, png_path, SimpleTokenizer(), augment=args.augment)
     val_dataset = CustomValDataset(nifti_path_valid, labels_path_valid)
 
     if args.distributed:
@@ -547,8 +454,7 @@ def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule,
     batch_time = AverageMeter('Time', ':6.2f')
     data_time = AverageMeter('Data', ':6.2f')
     mem = AverageMeter('Mem (GB)', ':6.1f')
-    # metric_names = models.get_metric_names(args.model)
-    metric_names = models.get_metric_names_3_views(args.model)
+    metric_names = models.get_metric_names(args.model)
     iters_per_epoch = len(train_loader) // args.update_freq
     metrics = OrderedDict([(name, AverageMeter(name, ':.2e')) for name in metric_names])
     progress = ProgressMeter(
@@ -576,25 +482,20 @@ def train(train_loader, model, criterion, optimizer, scaler, epoch, lr_schedule,
         # image = inputs[4]
         
         # Changed
-        # pc = inputs[0]
-        # # Needed to prevent einops.EinopsError: Expected 5 dimensions, got 4
-        # pc = torch.unsqueeze(pc, 1)
-        # image = inputs[1]
-        # texts = inputs[2]
-        
         pc = inputs[0]
         # Needed to prevent einops.EinopsError: Expected 5 dimensions, got 4
         pc = torch.unsqueeze(pc, 1)
-        texts = inputs[1]
-        image_1 = inputs[2]
-        image_2 = inputs[3]
-        image_3 = inputs[4]
+        image = inputs[1]
+        # spoof channel data
+        # print(f"image.shape: {image.shape}")
+        # image = torch.unsqueeze(image, 1)
+        texts = inputs[2]
         inputs = [[inputs]]
         
         # print(
         #     f"inputs length: {len(inputs)} | pc.shape: {pc.shape} | image.shape: {image.shape} | texts.shape: {texts.shape}")
         
-        inputs = [pc, texts, image_1, image_2, image_3]
+        inputs = [pc, texts, image]
 
         inputs = [tensor.cuda(args.gpu, non_blocking=True) for tensor in inputs]
         # print(
